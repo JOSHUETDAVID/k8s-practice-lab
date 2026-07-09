@@ -29,12 +29,11 @@ Repo de aprendizaje deliberado, no un proyecto de producción. La estructura est
 
 ```
 k8s-practice-lab/
-├── manifests/
-│   ├── deployment.yaml      # Deployment con 2 réplicas, resource limits, envFrom
-│   ├── service.yaml         # Service LoadBalancer (expuesto a localhost por Docker Desktop)
-│   ├── configmap.yaml       # Variables no sensibles
-│   ├── secret.yaml.example  # Plantilla — NO subir valores reales
-│   └── ingress.yaml         # Ingress apuntando al Service
+├── deployment.yaml      # Deployment con 2 réplicas, resource limits, envFrom
+├── service.yaml         # Service LoadBalancer (expuesto a localhost por Docker Desktop)
+├── configmap.yaml       # Variables no sensibles
+├── secret.yaml.example  # Plantilla — NO subir valores reales
+├── ingress.yaml         # Ingress apuntando al Service
 ├── runbook.md               # Procedimientos operativos L2
 └── README.md
 ```
