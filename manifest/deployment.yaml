@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: qas-taging
-          image: nginx:alphine
+          image: nginx:alpine
           ports:
             - containerPort: 80
           envFrom:
