@@ -1,27 +1,8 @@
 # k8s-practice-lab
 
-Laboratorio de práctica en Kubernetes ejecutado sobre un clúster local con `kind`, cubriendo objetos base (Deployment, Service, ConfigMap, Secret, Ingress), operación L2 (monitoreo con metrics-server, rollback real) y troubleshooting de incidentes reales vividos durante la práctica.
+Laboratorio de práctica en Kubernetes ejecutado sobre un clúster local con `kind`, gestionado con **GitOps vía ArgoCD**. Cubre objetos base (Deployment, Service, ConfigMap, Secret, Ingress), control de acceso (RBAC), operación L2 (monitoreo, rollback) y troubleshooting de incidentes reales — incluido uno detectado **después** de sincronizar con ArgoCD.
 
-Repo de aprendizaje deliberado, no un proyecto de producción. La estructura está pensada para servir como referencia rápida cuando revise un incidente similar en un rol real.
-
----
-
-## Objetivos
-
-- Practicar los conceptos que aparecen como excluyentes en ofertas de DevOps junior con foco en Kubernetes: Pods, Deployments, Services, ConfigMaps, Secrets, Ingress, RBAC básico, rollout/rollback.
-- Documentar cada troubleshooting real como runbook reproducible, no como blog post.
-- Construir muscle memory con `kubectl` sobre un clúster real (kind + Docker Desktop), no simuladores.
-
----
-
-## Stack
-
-| Componente | Versión |
-|---|---|
-| Kubernetes (kind) | v1.34.3 |
-| Docker Desktop | Kubernetes integrado |
-| Ingress Controller | NGINX Ingress Controller (deploy para kind) |
-| Metrics | metrics-server v0.7+ |
+Repo de aprendizaje deliberado. La estructura separa el **estado deseado real** (`manifests/`, gestionado por ArgoCD) de la **evidencia histórica de incidentes** (`incidentes/`, que ArgoCD nunca toca).
 
 ---
 
@@ -29,15 +10,73 @@ Repo de aprendizaje deliberado, no un proyecto de producción. La estructura est
 
 ```
 k8s-practice-lab/
-├── deployment.yaml      # Deployment con 2 réplicas, resource limits, envFrom
-├── deployment_malo.yaml # con este simule los errores
-├── service.yaml         # Service LoadBalancer (expuesto a localhost por Docker Desktop)
-├── configmap.yaml       # Variables no sensibles
-├── secret.yaml.example  # Plantilla — NO subir valores reales
-├── ingress.yaml         # Ingress apuntando al Service
-├── runbook.md               # Procedimientos operativos L2
+├── manifests/                # Estado deseado real — sincronizado por ArgoCD
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── configmap.yaml
+│   ├── secret.yaml
+│   ├── role.yaml              # RBAC: permisos de solo lectura sobre pods
+│   └── rolebinding.yaml        # RBAC: asigna el Role a la ServiceAccount
+├── incidentes/                 # Evidencia de troubleshooting — fuera del alcance de ArgoCD
+│   ├── deployment_malo.yaml     # Manifiesto usado para reproducir ErrImagePull a propósito
+│   ├── errImagePull.txt         # Salida real de terminal del incidente
+│   └── evidencia.txt
+├── runbook.md                  # Procedimientos operativos L2
 └── README.md
 ```
+
+---
+
+## Stack
+
+| Componente | Detalle |
+|---|---|
+| Kubernetes (kind) | v1.34.3, clúster local vía Docker Desktop |
+| GitOps | ArgoCD v3.4.5, instalado en el mismo clúster (namespace `argocd`) |
+| Ingress Controller | NGINX Ingress Controller (variante oficial para kind) |
+| Métricas | metrics-server |
+| Control de acceso | RBAC nativo (Role + RoleBinding) |
+
+---
+
+## GitOps con ArgoCD
+
+El repo se gestiona 100% declarativamente: **ArgoCD vigila `manifests/` y aplica los cambios mergeados a `main`**. No se corre `kubectl apply` a mano contra el clúster real desde que ArgoCD quedó configurado — el flujo es: cambio en código → commit → push → ArgoCD sincroniza (manual, revisado antes de aplicar).
+
+**Application configurada:**
+- Repository: `https://github.com/JOSHUETDAVID/k8s-practice-lab`
+- Path: `manifests/`
+- Destination: mismo clúster (`https://kubernetes.default.svc`), namespace `default`
+- Sync Policy: Manual — cada sincronización se revisa (`DIFF`) antes de confirmar, mismo criterio que un `terraform plan`
+
+**Estado actual:** `Synced` + `Healthy`, historial de 5 revisiones conservado (incluye el incidente descrito abajo y su corrección).
+
+---
+
+## RBAC — principio de mínimo privilegio, verificado
+
+`manifests/role.yaml` define un `Role` de solo lectura sobre pods:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+```
+
+`manifests/rolebinding.yaml` lo asigna a la ServiceAccount `default` del namespace.
+
+**Verificación** (no solo aplicado — comprobado):
+
+```bash
+kubectl auth can-i get pods --as=system:serviceaccount:default:default -n default
+# yes
+
+kubectl auth can-i delete pods --as=system:serviceaccount:default:default -n default
+# no
+```
+
+Confirma que el Role otorga exactamente los permisos declarados — ni más, ni menos.
 
 ---
 
@@ -45,132 +84,68 @@ k8s-practice-lab/
 
 | Decisión | Razón |
 |---|---|
-| `kind` en vez de minikube | Ya tenía Docker Desktop; kind es más liviano y crea el clúster dentro de un contenedor Docker |
-| `LoadBalancer` en el Service | Docker Desktop lo expone directo a localhost, mientras que `NodePort` en kind falla por limitación de puertos altos (documentado como incidente #1) |
-| `envFrom` en vez de `env` individual | Todas las variables del ConfigMap/Secret se necesitan iguales dentro del contenedor; sin renombrado |
-| `resource.limits` de 200m CPU / 128Mi memoria | Suficientes para nginx sin tráfico real; `kubectl top pods` confirma consumo real de ~0m CPU / ~12Mi |
-| RollingUpdate por defecto (max surge 25%, max unavailable 25%) | Verificado en un rollback real: los pods viejos siguieron sirviendo mientras el nuevo fallaba |
-| Ingress con NGINX Controller (variante para kind) | El manifiesto oficial de kind es distinto al de clústeres cloud — un solo comando lo instala |
+| `manifests/` separado de `incidentes/` | Evita que ArgoCD reconcilie manifiestos rotos usados solo para reproducir errores |
+| `LoadBalancer` en el Service | Docker Desktop lo expone directo a localhost; `NodePort` falla por limitación de puertos altos en kind + Windows |
+| Ingress con NGINX Controller (variante kind) | El manifiesto oficial para kind difiere del usado en clústeres cloud |
+| ArgoCD con Sync Policy Manual | Permite revisar el diff antes de aplicar, igual que `kubectl diff` o `terraform plan` |
+| RBAC con Role acotado a namespace | Principio de mínimo privilegio — ClusterRole hubiera sido excesivo para este caso |
+| Corrección de incidentes vía commit al repo, nunca `kubectl` directo | Respeta GitOps como fuente única de verdad; evita que ArgoCD revierta cambios manuales en el próximo sync |
 
 ---
 
-## Cómo lo probé
+## Incidentes documentados
 
-### 1. Recreación de pod desde ReplicaSet
+Formato: síntoma → diagnóstico → causa raíz → resolución → prevención. Detalle completo en `runbook.md` y `incidentes/`.
 
-Borré manualmente uno de los pods del Deployment:
+### 1. ErrImagePull (reproducido a propósito)
+Imagen con tag inexistente en `incidentes/deployment_malo.yaml`. Diagnosticado con `kubectl describe pod`, evidencia real en `incidentes/errImagePull.txt`.
+
+### 2. CreateContainerConfigError
+ConfigMap/Secret referenciado por el Deployment antes de existir en el clúster. Causa: se aplicó el Deployment sin aplicar antes sus dependencias.
+
+### 3. NodePort inaccesible en kind + Windows
+`curl` a puertos NodePort fallaba pese a que `kubectl get endpoints` mostraba pods sanos. Resuelto migrando a `LoadBalancer`, que Docker Desktop sí expone a localhost.
+
+### 4. ImagePullBackOff post-sincronización de ArgoCD
+Tras cambiar el Path de la Application a `manifests/`, ArgoCD sincronizó un `deployment.yaml` con una imagen inválida que no se había corregido antes del commit. Diagnosticado con `kubectl describe pod` sobre el nuevo ReplicaSet. **Corrección aplicada en el repositorio** (`git commit` con mensaje "Update deployment.yaml"), no en el clúster — ArgoCD detectó el nuevo commit y sincronizó la versión corregida automáticamente. 
+Verificado: `Sync Status: Synced`, `Health: Healthy`.
+
+---
+
+## Cómo reproducirlo
 
 ```bash
-kubectl delete pod app-1-684d4b6b56-47ftd
+kind create cluster
+kubectl create namespace argocd
+kubectl create -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+# Nota: usar 'create', no 'apply', por que da error — el CRD applicationsets.argoproj.io
+# excede el límite de anotaciones que impone 'apply' (last-applied-configuration)
+
+kubectl port-forward svc/argocd-server -n argocd 8081:443
+# Conectar la Application vía UI apuntando a este repo, path: manifests/
+```
+
+Para reproducir el incidente de ErrImagePull a propósito:
+```bash
+kubectl apply -f incidentes/deployment_malo.yaml
 kubectl get pods
+kubectl describe pod <nombre-del-pod-roto>
 ```
-
-Kubernetes creó un pod nuevo con nombre distinto (`app-1-684d4b6b56-rfklc`) en menos de 15 segundos. Repetí el mismo experimento con un Pod suelto (no gestionado por Deployment) y el pod NO se recreó. Prueba de que Deployment/ReplicaSet garantiza persistencia declarativa.
-
-### 2. Rollback tras despliegue con imagen inexistente
-
-Cambié la imagen del Deployment a `nginx:no-existo` y apliqué:
-
-```bash
-kubectl get pods
-NAME                     READY   STATUS         AGE
-app-1-574666675-2kqtt    0/1     ErrImagePull   11s     ← nuevo, roto
-app-1-684d4b6b56-245nb   1/1     Running        20h     ← viejo, sano
-app-1-684d4b6b56-2zk8k   1/1     Running        20h     ← viejo, sano
-```
-
-Los pods viejos siguieron sirviendo tráfico (verificado con `curl http://localhost/`). Ejecuté `kubectl rollout undo deployment/app-1` y el estado volvió a la última revisión buena sin downtime medible.
-
-### 3. Ingress funcional en localhost
-
-Instalé el NGINX Ingress Controller para kind y apliqué el manifiesto de Ingress. `curl http://localhost/` responde con la página de nginx a través del Ingress Controller → Service → Pod.
-
-### 4. Consumo de recursos vs limits
-
-```bash
-kubectl top pods
-NAME                     CPU(cores)   MEMORY(bytes)
-app-1-684d4b6b56-245nb   0m           12Mi
-app-1-684d4b6b56-2zk8k   0m           11Mi
-```
-
-Contra los limits de 200m CPU / 128Mi memoria. Margen de sobra — sin riesgo de OOMKilled con la carga actual (nginx sin tráfico real).
 
 ---
 
-## Incidentes reales resueltos durante la práctica
+## Qué sigue
 
-### Incidente #1 — NodePort no expuesto a `localhost` con kind + Windows
-
-**Síntoma:** `curl http://localhost:<nodeport>` fallaba con "Could not connect" para todos los Services tipo NodePort.
-
-**Diagnóstico:** `kubectl get endpoints` mostró que los Services sí tenían pods sanos detrás. `kubectl port-forward` sí funcionaba. El problema estaba en la capa entre Docker Desktop y localhost, no en Kubernetes.
-
-**Causa raíz:** kind sobre Docker Desktop en Windows no reenvía automáticamente puertos NodePort altos al host.
-
-**Resolución:** cambié el tipo del Service a `LoadBalancer`. Docker Desktop sí expone estos directo a `localhost:<port>` sin configuración extra.
-
-**Prevención:** en local, `LoadBalancer` o `Ingress` son las opciones prácticas — NodePort queda solo para debugging interno.
-
-### Incidente #2 — `CreateContainerConfigError` en pods nuevos
-
-**Síntoma:** tras aplicar el Deployment con `envFrom`, los pods quedaron en `CreateContainerConfigError` sin arrancar.
-
-**Diagnóstico:**
-
-```bash
-kubectl describe pod app-1-684d4b6b56-98krf
-```
-
-Sección `Events`:
-```
-Error: configmap "app-1-config" not found
-```
-
-Verificación:
-```bash
-kubectl get configmaps  # solo aparecía kube-root-ca.crt, no app-1-config
-kubectl get secrets     # vacío
-```
-
-**Causa raíz:** apliqué solo el `deployment.yaml`, sin aplicar antes los archivos `configmap.yaml` y `secret.yaml`. El Deployment referenciaba recursos que no existían.
-
-**Resolución:**
-
-```bash
-kubectl apply -f configmap.yaml
-kubectl apply -f secret.yaml
-kubectl delete pod <pods-en-error>  # ReplicaSet los recrea con las deps ya presentes
-```
-
-**Prevención:** aplicar dependencias antes que el recurso que las usa. Considerar Kustomize para ordenar esto automáticamente en el futuro.
-
----
-
-## Runbook operativo
-
-Ver `runbook.md` para procedimientos L2:
-
-- Monitoreo diario de contenedores
-- Triage de pipeline fallido (rollback ejecutado)
-- Namespaces y RBAC básico
-- Recolección de evidencia para incidentes
-- Runbooks de incidentes documentados
-
----
-
-## Qué NO está aquí (por ahora)
-
-- ArgoCD/GitOps — pendiente (parte siguiente del runbook)
-- Kustomize base + overlays — diseñado, no aplicado
-- Cluster real en EKS/GKE — este repo es 100% local con kind
-- Métricas persistentes (Prometheus/Grafana) — fuera del alcance de esta práctica inicial
+- [ ] `CrashLoopBackOff` como cuarto caso documentado
+- [ ] Namespaces `staging`/`production` separados (hoy todo vive en `default`)
+- [ ] Kustomize (base + overlays) para separar entornos
+- [ ] Simulación de flujo de ticketing (formato ServiceNow/Jira) por incidente
 
 ---
 
 ## Referencias
 
 - [Kubernetes Docs — Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
-- [Kubernetes Docs — Services](https://kubernetes.io/docs/concepts/services-networking/service/)
-- [kind — Quick Start](https://kind.sigs.k8s.io/docs/user/quick-start/)
-- [NGINX Ingress Controller para kind](https://kind.sigs.k8s.io/docs/user/ingress/)
+- [Kubernetes Docs — RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
+- [ArgoCD — Getting Started](https://argo-cd.readthedocs.io/en/stable/getting_started/)
+- [kind — Ingress](https://kind.sigs.k8s.io/docs/user/ingress/)
