@@ -10,14 +10,14 @@ Repo de aprendizaje deliberado. La estructura separa el **estado deseado real** 
 
 ```
 k8s-practice-lab/
-├── manifests/                # Estado deseado real — sincronizado por ArgoCD
+├── manifest/                # Estado deseado real — sincronizado por ArgoCD
 │   ├── deployment.yaml
 │   ├── service.yaml
 │   ├── configmap.yaml
 │   ├── secret.yaml
 │   ├── role.yaml              # RBAC: permisos de solo lectura sobre pods
 │   └── rolebinding.yaml        # RBAC: asigna el Role a la ServiceAccount
-├── incidentes/                 # Evidencia de troubleshooting — fuera del alcance de ArgoCD
+├── incidents/                 # Evidencia de troubleshooting — fuera del alcance de ArgoCD
 │   ├── deployment_malo.yaml     # Manifiesto usado para reproducir ErrImagePull a propósito
 │   ├── errImagePull.txt         # Salida real de terminal del incidente
 │   └── evidencia.txt
