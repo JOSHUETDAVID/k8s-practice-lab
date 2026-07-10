@@ -2,6 +2,7 @@
   kind: Service
   metadata:
     name: app-1
+    namespace: staging 
   spec:
     type: LoadBalancer
     selector:
